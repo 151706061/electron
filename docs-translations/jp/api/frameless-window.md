@@ -11,9 +11,9 @@ const BrowserWindow = require('electron').BrowserWindow;
 var win = new BrowserWindow({ width: 800, height: 600, frame: false });
 ```
 
-### OS Xでの別の方法
+### macOSでの別の方法
 
-Mac OS X 10.10 Yosemite以降では、Chrome無しのウィンドウを指定する方法があります。`frame`を`false`に設定しタイトルバーとウィンドウコントロールの両方を無効にする代わりに、タイトルバーを隠しコンテンツをフルウィンドウサイズに広げたいけど、標準的なウィンドウ操作用にウィンドウコントロール("トラフィックライト")を維持したいかもしれません。新しい`titleBarStyle`オプションを指定することで、そうできます。
+macOS 10.10 Yosemite以降では、Chrome無しのウィンドウを指定する方法があります。`frame`を`false`に設定しタイトルバーとウィンドウコントロールの両方を無効にする代わりに、タイトルバーを隠しコンテンツをフルウィンドウサイズに広げたいけど、標準的なウィンドウ操作用にウィンドウコントロール("トラフィックライト")を維持したいかもしれません。新しい`titleBarStyle`オプションを指定することで、そうできます。
 
 ```javascript
 var win = new BrowserWindow({ 'titleBarStyle': 'hidden' });
@@ -29,7 +29,7 @@ var win = new BrowserWindow({ transparent: true, frame: false });
 
 ### 制限
 
-* 透明領域をクリックすることはできません。この問題を解決するためにウィンドウの輪郭を設定するAPIを導入しようとしています。詳細は、[our issue](https://github.com/atom/electron/issues/1335) を参照してください。
+* 透明領域をクリックすることはできません。この問題を解決するためにウィンドウの輪郭を設定するAPIを導入しようとしています。詳細は、[our issue](https://github.com/electron/electron/issues/1335) を参照してください。
 * 透明なウィンドウはサイズ変更できません。いくつかのプラットフォーム上では、`resizable`の`true`設定は、いくつかのプラットフォーム上で、動作を停止する透明ウィンドウを作成するかもしれません。
 * `blur`フィルターはウェブページのみに適用され、ウィンドウの下のコンテンツ（例えば、ユーザーのシステム上でほかのアプリケーションを開く）に、ぼやける効果を適用する方法はありません。
 * Windows オペレーティングシステム上では、DMMが無効のとき透明なウィンドウは動作しません。

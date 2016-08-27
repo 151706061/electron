@@ -1,13 +1,14 @@
 # 빌드 시스템 개요
 
-Electron은 프로젝트 생성을 위해 `gyp`를 사용하며 `ninja`를 이용하여 빌드합니다.
-프로젝트 설정은 `.gyp` 와 `.gypi` 파일에서 볼 수 있습니다.
+Electron은 프로젝트 생성을 위해 [gyp](https://gyp.gsrc.io/)를 사용하며
+[ninja](https://ninja-build.org/)를 이용하여 빌드합니다. 프로젝트 설정은 `.gyp` 와
+`.gypi` 파일에서 볼 수 있습니다.
 
 ## gyp 파일
 
 Electron을 빌드 할 때 `gyp` 파일들은 다음과 같은 규칙을 따릅니다:
 
-* `atom.gyp`는 Electron의 빌드 과정 자체를 정의합니다.
+* `electron.gyp`는 Electron의 빌드 과정 자체를 정의합니다.
 * `common.gypi`는 Node가 Chromium과 함께 빌드될 수 있도록 조정한 빌드 설정입니다.
 * `vendor/brightray/brightray.gyp`는 `brightray`의 빌드 과정을 정의하고 Chromium
   링킹에 대한 기본적인 설정을 포함합니다.

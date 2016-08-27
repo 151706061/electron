@@ -68,7 +68,7 @@ var mainWindow = null;
 
 // 當所有窗口被關閉了，退出。
 app.on('window-all-closed', function() {
-  // 在OS X 上，通常使用者在明確地按下 Cmd + Q 之前
+  // 在macOS 上，通常使用者在明確地按下 Cmd + Q 之前
   // 應用會保持活動狀態
   if (process.platform != 'darwin') {
     app.quit();
@@ -147,26 +147,26 @@ $ .\electron\electron.exe your-app\
 $ ./electron/electron your-app/
 ```
 
-### OS X
+### macOS
 
 ``` bash
 $ ./Electron.app/Contents/MacOS/Electron your-app/
 ```
 
-`Electron.app` 裡面是 Electron 釋出包，你可以在[這裡](https://github.com/atom/electron/releases)下載到。
+`Electron.app` 裡面是 Electron 釋出包，你可以在[這裡](https://github.com/electron/electron/releases)下載到。
 
 # 作為版本發行
-在你完成了你的應用程式後，你可以依照 [應用部署](https://github.com/atom/electron/blob/master/docs/tutorial/application-distribution.md) 指南發布一個版本，並且運行已經打包好的應用程式。
+在你完成了你的應用程式後，你可以依照 [應用部署](https://github.com/electron/electron/blob/master/docs/tutorial/application-distribution.md) 指南發布一個版本，並且運行已經打包好的應用程式。
 
 # 試試這個範例
 
-Clone 與執行本篇教學的程式碼，它們都放在 [`atom/electron-quick-start`](https://github.com/atom/electron-quick-start) 這個 repository。
+Clone 與執行本篇教學的程式碼，它們都放在 [`atom/electron-quick-start`](https://github.com/electron/electron-quick-start) 這個 repository。
 
 **Note**: 執行這個範例需要 [Git](https://git-scm.com) 以及 [Node.js](https://nodejs.org/en/download/) (其中包括 [npm](https://npmjs.org)) 在你的作業系統。
 
 ```bash
 # Clone the repository
-$ git clone https://github.com/atom/electron-quick-start
+$ git clone https://github.com/electron/electron-quick-start
 # Go into the repository
 $ cd electron-quick-start
 # Install dependencies and run the app

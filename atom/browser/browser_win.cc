@@ -10,17 +10,18 @@
 #include <shlobj.h>
 #include <shobjidl.h>
 
+#include "atom/common/atom_version.h"
+#include "atom/common/native_mate_converters/string16_converter.h"
 #include "base/base_paths.h"
 #include "base/file_version_info.h"
 #include "base/files/file_path.h"
-#include "base/memory/scoped_ptr.h"
 #include "base/path_service.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/win/win_util.h"
+#include "base/win/registry.h"
 #include "base/win/windows_version.h"
-#include "atom/common/atom_version.h"
 
 namespace atom {
 
@@ -39,6 +40,28 @@ BOOL CALLBACK WindowsEnumerationHandler(HWND hwnd, LPARAM param) {
   }
 
   return TRUE;
+}
+
+bool GetProtocolLaunchPath(mate::Arguments* args, base::string16* exe) {
+  // Executable Path
+  if (!args->GetNext(exe)) {
+    base::FilePath path;
+    if (!PathService::Get(base::FILE_EXE, &path)) {
+      LOG(ERROR) << "Error getting app exe path";
+      return false;
+    }
+    *exe = path.value();
+  }
+
+  // Read in optional args arg
+  std::vector<base::string16> launch_args;
+  if (args->GetNext(&launch_args) && !launch_args.empty())
+    *exe = base::StringPrintf(L"\"%s\" %s \"%%1\"",
+                              exe->c_str(),
+                              base::JoinString(launch_args, L" ").c_str());
+  else
+    *exe = base::StringPrintf(L"\"%s\" \"%%1\"", exe->c_str());
+  return true;
 }
 
 }  // namespace
@@ -79,22 +102,22 @@ void Browser::SetAppUserModelID(const base::string16& name) {
   SetCurrentProcessExplicitAppUserModelID(app_user_model_id_.c_str());
 }
 
-void Browser::SetUserTasks(const std::vector<UserTask>& tasks) {
+bool Browser::SetUserTasks(const std::vector<UserTask>& tasks) {
   CComPtr<ICustomDestinationList> destinations;
   if (FAILED(destinations.CoCreateInstance(CLSID_DestinationList)))
-    return;
+    return false;
   if (FAILED(destinations->SetAppID(GetAppUserModelID())))
-    return;
+    return false;
 
   // Start a transaction that updates the JumpList of this application.
   UINT max_slots;
   CComPtr<IObjectArray> removed;
   if (FAILED(destinations->BeginList(&max_slots, IID_PPV_ARGS(&removed))))
-    return;
+    return false;
 
   CComPtr<IObjectCollection> collection;
   if (FAILED(collection.CoCreateInstance(CLSID_EnumerableObjectCollection)))
-    return;
+    return false;
 
   for (auto& task : tasks) {
     CComPtr<IShellLink> link;
@@ -102,28 +125,186 @@ void Browser::SetUserTasks(const std::vector<UserTask>& tasks) {
         FAILED(link->SetPath(task.program.value().c_str())) ||
         FAILED(link->SetArguments(task.arguments.c_str())) ||
         FAILED(link->SetDescription(task.description.c_str())))
-      return;
+      return false;
 
     if (!task.icon_path.empty() &&
         FAILED(link->SetIconLocation(task.icon_path.value().c_str(),
                                      task.icon_index)))
-      return;
+      return false;
 
     CComQIPtr<IPropertyStore> property_store = link;
     if (!base::win::SetStringValueForPropertyStore(property_store, PKEY_Title,
                                                    task.title.c_str()))
-      return;
+      return false;
 
     if (FAILED(collection->AddObject(link)))
-      return;
+      return false;
   }
 
   // When the list is empty "AddUserTasks" could fail, so we don't check return
   // value for it.
   CComQIPtr<IObjectArray> task_array = collection;
   destinations->AddUserTasks(task_array);
-  destinations->CommitList();
+  return SUCCEEDED(destinations->CommitList());
 }
+
+bool Browser::RemoveAsDefaultProtocolClient(const std::string& protocol,
+                                            mate::Arguments* args) {
+  if (protocol.empty())
+    return false;
+
+  // Main Registry Key
+  HKEY root = HKEY_CURRENT_USER;
+  base::string16 keyPath = base::UTF8ToUTF16("Software\\Classes\\" + protocol);
+
+  // Command Key
+  base::string16 cmdPath = keyPath + L"\\shell\\open\\command";
+
+  base::win::RegKey key;
+  base::win::RegKey commandKey;
+  if (FAILED(key.Open(root, keyPath.c_str(), KEY_ALL_ACCESS)))
+    // Key doesn't even exist, we can confirm that it is not set
+    return true;
+
+  if (FAILED(commandKey.Open(root, cmdPath.c_str(), KEY_ALL_ACCESS)))
+    // Key doesn't even exist, we can confirm that it is not set
+    return true;
+
+  base::string16 keyVal;
+  if (FAILED(commandKey.ReadValue(L"", &keyVal)))
+    // Default value not set, we can confirm that it is not set
+    return true;
+
+  base::string16 exe;
+  if (!GetProtocolLaunchPath(args, &exe))
+    return false;
+
+  if (keyVal == exe) {
+    // Let's kill the key
+    if (FAILED(key.DeleteKey(L"shell")))
+      return false;
+
+    return true;
+  } else {
+    return true;
+  }
+}
+
+bool Browser::SetAsDefaultProtocolClient(const std::string& protocol,
+                                        mate::Arguments* args) {
+  // HKEY_CLASSES_ROOT
+  //    $PROTOCOL
+  //       (Default) = "URL:$NAME"
+  //       URL Protocol = ""
+  //       shell
+  //          open
+  //             command
+  //                (Default) = "$COMMAND" "%1"
+  //
+  // However, the "HKEY_CLASSES_ROOT" key can only be written by the
+  // Administrator user. So, we instead write to "HKEY_CURRENT_USER\
+  // Software\Classes", which is inherited by "HKEY_CLASSES_ROOT"
+  // anyway, and can be written by unprivileged users.
+
+  if (protocol.empty())
+    return false;
+
+  base::string16 exe;
+  if (!GetProtocolLaunchPath(args, &exe))
+    return false;
+
+  // Main Registry Key
+  HKEY root = HKEY_CURRENT_USER;
+  base::string16 keyPath = base::UTF8ToUTF16("Software\\Classes\\" + protocol);
+  base::string16 urlDecl = base::UTF8ToUTF16("URL:" + protocol);
+
+  // Command Key
+  base::string16 cmdPath = keyPath + L"\\shell\\open\\command";
+
+  // Write information to registry
+  base::win::RegKey key(root, keyPath.c_str(), KEY_ALL_ACCESS);
+  if (FAILED(key.WriteValue(L"URL Protocol", L"")) ||
+      FAILED(key.WriteValue(L"", urlDecl.c_str())))
+    return false;
+
+  base::win::RegKey commandKey(root, cmdPath.c_str(), KEY_ALL_ACCESS);
+  if (FAILED(commandKey.WriteValue(L"", exe.c_str())))
+    return false;
+
+  return true;
+}
+
+bool Browser::IsDefaultProtocolClient(const std::string& protocol,
+                                      mate::Arguments* args) {
+  if (protocol.empty())
+    return false;
+
+  base::string16 exe;
+  if (!GetProtocolLaunchPath(args, &exe))
+    return false;
+
+  // Main Registry Key
+  HKEY root = HKEY_CURRENT_USER;
+  base::string16 keyPath = base::UTF8ToUTF16("Software\\Classes\\" + protocol);
+
+  // Command Key
+  base::string16 cmdPath = keyPath + L"\\shell\\open\\command";
+
+  base::win::RegKey key;
+  base::win::RegKey commandKey;
+  if (FAILED(key.Open(root, keyPath.c_str(), KEY_ALL_ACCESS)))
+    // Key doesn't exist, we can confirm that it is not set
+    return false;
+
+  if (FAILED(commandKey.Open(root, cmdPath.c_str(), KEY_ALL_ACCESS)))
+    // Key doesn't exist, we can confirm that it is not set
+    return false;
+
+  base::string16 keyVal;
+  if (FAILED(commandKey.ReadValue(L"", &keyVal)))
+    // Default value not set, we can confirm that it is not set
+    return false;
+
+  // Default value is the same as current file path
+  return keyVal == exe;
+}
+
+bool Browser::SetBadgeCount(int count) {
+  return false;
+}
+
+void Browser::SetLoginItemSettings(LoginItemSettings settings) {
+  base::string16 keyPath = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+  base::win::RegKey key(HKEY_CURRENT_USER, keyPath.c_str(), KEY_ALL_ACCESS);
+
+  if (settings.open_at_login) {
+    base::FilePath path;
+    if (PathService::Get(base::FILE_EXE, &path)) {
+      base::string16 exePath(path.value());
+      key.WriteValue(GetAppUserModelID(), exePath.c_str());
+    }
+  } else {
+    key.DeleteValue(GetAppUserModelID());
+  }
+}
+
+Browser::LoginItemSettings Browser::GetLoginItemSettings() {
+  LoginItemSettings settings;
+  base::string16 keyPath = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+  base::win::RegKey key(HKEY_CURRENT_USER, keyPath.c_str(), KEY_ALL_ACCESS);
+  base::string16 keyVal;
+
+  if (!FAILED(key.ReadValue(GetAppUserModelID(), &keyVal))) {
+    base::FilePath path;
+    if (PathService::Get(base::FILE_EXE, &path)) {
+      base::string16 exePath(path.value());
+      settings.open_at_login = keyVal == exePath;
+    }
+  }
+
+  return settings;
+}
+
 
 PCWSTR Browser::GetAppUserModelID() {
   if (app_user_model_id_.empty()) {
@@ -137,7 +318,7 @@ PCWSTR Browser::GetAppUserModelID() {
 std::string Browser::GetExecutableFileVersion() const {
   base::FilePath path;
   if (PathService::Get(base::FILE_EXE, &path)) {
-    scoped_ptr<FileVersionInfo> version_info(
+    std::unique_ptr<FileVersionInfo> version_info(
         FileVersionInfo::CreateFileVersionInfo(path));
     return base::UTF16ToUTF8(version_info->product_version());
   }
@@ -148,7 +329,7 @@ std::string Browser::GetExecutableFileVersion() const {
 std::string Browser::GetExecutableFileProductName() const {
   base::FilePath path;
   if (PathService::Get(base::FILE_EXE, &path)) {
-    scoped_ptr<FileVersionInfo> version_info(
+    std::unique_ptr<FileVersionInfo> version_info(
         FileVersionInfo::CreateFileVersionInfo(path));
     return base::UTF16ToUTF8(version_info->product_name());
   }

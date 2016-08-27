@@ -5,17 +5,20 @@
 #include "atom/renderer/api/atom_api_web_frame.h"
 
 #include "atom/common/api/event_emitter_caller.h"
+#include "atom/common/native_mate_converters/blink_converter.h"
 #include "atom/common/native_mate_converters/callback.h"
 #include "atom/common/native_mate_converters/gfx_converter.h"
 #include "atom/common/native_mate_converters/string16_converter.h"
 #include "atom/renderer/api/atom_api_spell_check_client.h"
+#include "base/memory/memory_pressure_listener.h"
 #include "content/public/renderer/render_frame.h"
 #include "content/public/renderer/render_view.h"
 #include "native_mate/dictionary.h"
 #include "native_mate/object_template_builder.h"
+#include "third_party/WebKit/public/web/WebCache.h"
 #include "third_party/WebKit/public/web/WebDocument.h"
 #include "third_party/WebKit/public/web/WebLocalFrame.h"
-#include "third_party/WebKit/public/web/WebScopedUserGesture.h"
+#include "third_party/WebKit/public/web/WebScriptExecutionCallback.h"
 #include "third_party/WebKit/public/web/WebScriptSource.h"
 #include "third_party/WebKit/public/web/WebSecurityPolicy.h"
 #include "third_party/WebKit/public/web/WebView.h"
@@ -26,8 +29,37 @@ namespace atom {
 
 namespace api {
 
-WebFrame::WebFrame()
+namespace {
+
+class ScriptExecutionCallback : public blink::WebScriptExecutionCallback {
+ public:
+  using CompletionCallback =
+      base::Callback<void(
+          const v8::Local<v8::Value>& result)>;
+
+  explicit ScriptExecutionCallback(const CompletionCallback& callback)
+      : callback_(callback) {}
+  ~ScriptExecutionCallback() override {}
+
+  void completed(
+      const blink::WebVector<v8::Local<v8::Value>>& result) override {
+    if (!callback_.is_null() && !result.isEmpty() && !result[0].IsEmpty())
+      // Right now only single results per frame is supported.
+      callback_.Run(result[0]);
+    delete this;
+  }
+
+ private:
+  CompletionCallback callback_;
+
+  DISALLOW_COPY_AND_ASSIGN(ScriptExecutionCallback);
+};
+
+}  // namespace
+
+WebFrame::WebFrame(v8::Isolate* isolate)
     : web_frame_(blink::WebLocalFrame::frameForCurrentContext()) {
+  Init(isolate);
 }
 
 WebFrame::~WebFrame() {
@@ -39,7 +71,7 @@ void WebFrame::SetName(const std::string& name) {
 
 double WebFrame::SetZoomLevel(double level) {
   double ret = web_frame_->view()->setZoomLevel(level);
-  mate::EmitEvent(isolate(), GetWrapper(isolate()), "zoom-level-changed", ret);
+  mate::EmitEvent(isolate(), GetWrapper(), "zoom-level-changed", ret);
   return ret;
 }
 
@@ -114,6 +146,7 @@ void WebFrame::RegisterURLSchemeAsPrivileged(const std::string& scheme) {
       privileged_scheme);
   blink::WebSecurityPolicy::registerURLSchemeAsSupportingFetchAPI(
       privileged_scheme);
+  blink::WebSecurityPolicy::registerURLSchemeAsCORSEnabled(privileged_scheme);
 }
 
 void WebFrame::InsertText(const std::string& text) {
@@ -124,14 +157,40 @@ void WebFrame::ExecuteJavaScript(const base::string16& code,
                                  mate::Arguments* args) {
   bool has_user_gesture = false;
   args->GetNext(&has_user_gesture);
-  scoped_ptr<blink::WebScopedUserGesture> gesture(
-      has_user_gesture ? new blink::WebScopedUserGesture : nullptr);
-  web_frame_->executeScriptAndReturnValue(blink::WebScriptSource(code));
+  ScriptExecutionCallback::CompletionCallback completion_callback;
+  args->GetNext(&completion_callback);
+  std::unique_ptr<blink::WebScriptExecutionCallback> callback(
+      new ScriptExecutionCallback(completion_callback));
+  web_frame_->requestExecuteScriptAndReturnValue(
+      blink::WebScriptSource(code),
+      has_user_gesture,
+      callback.release());
 }
 
-mate::ObjectTemplateBuilder WebFrame::GetObjectTemplateBuilder(
+// static
+mate::Handle<WebFrame> WebFrame::Create(v8::Isolate* isolate) {
+  return mate::CreateHandle(isolate, new WebFrame(isolate));
+}
+
+blink::WebCache::ResourceTypeStats WebFrame::GetResourceUsage(
     v8::Isolate* isolate) {
-  return mate::ObjectTemplateBuilder(isolate)
+  blink::WebCache::ResourceTypeStats stats;
+  blink::WebCache::getResourceTypeStats(&stats);
+  return stats;
+}
+
+void WebFrame::ClearCache(v8::Isolate* isolate) {
+  isolate->IdleNotificationDeadline(0.5);
+  blink::WebCache::clear();
+  base::MemoryPressureListener::NotifyMemoryPressure(
+    base::MemoryPressureListener::MEMORY_PRESSURE_LEVEL_CRITICAL);
+}
+
+// static
+void WebFrame::BuildPrototype(
+    v8::Isolate* isolate, v8::Local<v8::FunctionTemplate> prototype) {
+  prototype->SetClassName(mate::StringToV8(isolate, "WebFrame"));
+  mate::ObjectTemplateBuilder(isolate, prototype->PrototypeTemplate())
       .SetMethod("setName", &WebFrame::SetName)
       .SetMethod("setZoomLevel", &WebFrame::SetZoomLevel)
       .SetMethod("getZoomLevel", &WebFrame::GetZoomLevel)
@@ -151,12 +210,9 @@ mate::ObjectTemplateBuilder WebFrame::GetObjectTemplateBuilder(
       .SetMethod("registerURLSchemeAsPrivileged",
                  &WebFrame::RegisterURLSchemeAsPrivileged)
       .SetMethod("insertText", &WebFrame::InsertText)
-      .SetMethod("executeJavaScript", &WebFrame::ExecuteJavaScript);
-}
-
-// static
-mate::Handle<WebFrame> WebFrame::Create(v8::Isolate* isolate) {
-  return CreateHandle(isolate, new WebFrame);
+      .SetMethod("executeJavaScript", &WebFrame::ExecuteJavaScript)
+      .SetMethod("getResourceUsage", &WebFrame::GetResourceUsage)
+      .SetMethod("clearCache", &WebFrame::ClearCache);
 }
 
 }  // namespace api
@@ -165,11 +221,14 @@ mate::Handle<WebFrame> WebFrame::Create(v8::Isolate* isolate) {
 
 namespace {
 
+using atom::api::WebFrame;
+
 void Initialize(v8::Local<v8::Object> exports, v8::Local<v8::Value> unused,
                 v8::Local<v8::Context> context, void* priv) {
   v8::Isolate* isolate = context->GetIsolate();
   mate::Dictionary dict(isolate, exports);
-  dict.Set("webFrame", atom::api::WebFrame::Create(isolate));
+  dict.Set("webFrame", WebFrame::Create(isolate));
+  dict.Set("WebFrame", WebFrame::GetConstructor(isolate)->GetFunction());
 }
 
 }  // namespace

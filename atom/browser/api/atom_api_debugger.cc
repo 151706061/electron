@@ -23,17 +23,10 @@ namespace atom {
 
 namespace api {
 
-namespace {
-
-// The wrapDebugger funtion which is implemented in JavaScript.
-using WrapDebuggerCallback = base::Callback<void(v8::Local<v8::Value>)>;
-WrapDebuggerCallback g_wrap_debugger;
-
-}  // namespace
-
-Debugger::Debugger(content::WebContents* web_contents)
+Debugger::Debugger(v8::Isolate* isolate, content::WebContents* web_contents)
     : web_contents_(web_contents),
       previous_request_id_(0) {
+  Init(isolate);
 }
 
 Debugger::~Debugger() {
@@ -51,7 +44,7 @@ void Debugger::DispatchProtocolMessage(DevToolsAgentHost* agent_host,
                                        const std::string& message) {
   DCHECK(agent_host == agent_host_.get());
 
-  scoped_ptr<base::Value> parsed_message(base::JSONReader::Read(message));
+  std::unique_ptr<base::Value> parsed_message(base::JSONReader::Read(message));
   if (!parsed_message->IsType(base::Value::TYPE_DICTIONARY))
     return;
 
@@ -150,31 +143,18 @@ void Debugger::SendCommand(mate::Arguments* args) {
 mate::Handle<Debugger> Debugger::Create(
     v8::Isolate* isolate,
     content::WebContents* web_contents) {
-  auto handle = mate::CreateHandle(isolate, new Debugger(web_contents));
-  g_wrap_debugger.Run(handle.ToV8());
-  return handle;
+  return mate::CreateHandle(isolate, new Debugger(isolate, web_contents));
 }
 
 // static
 void Debugger::BuildPrototype(v8::Isolate* isolate,
-                              v8::Local<v8::ObjectTemplate> prototype) {
-  mate::ObjectTemplateBuilder(isolate, prototype)
+                              v8::Local<v8::FunctionTemplate> prototype) {
+  prototype->SetClassName(mate::StringToV8(isolate, "Debugger"));
+  mate::ObjectTemplateBuilder(isolate, prototype->PrototypeTemplate())
       .SetMethod("attach", &Debugger::Attach)
       .SetMethod("isAttached", &Debugger::IsAttached)
       .SetMethod("detach", &Debugger::Detach)
       .SetMethod("sendCommand", &Debugger::SendCommand);
-}
-
-void ClearWrapDebugger() {
-  g_wrap_debugger.Reset();
-}
-
-void SetWrapDebugger(const WrapDebuggerCallback& callback) {
-  g_wrap_debugger = callback;
-
-  // Cleanup the wrapper on exit.
-  atom::AtomBrowserMainParts::Get()->RegisterDestructionCallback(
-      base::Bind(ClearWrapDebugger));
 }
 
 }  // namespace api
@@ -183,11 +163,13 @@ void SetWrapDebugger(const WrapDebuggerCallback& callback) {
 
 namespace {
 
+using atom::api::Debugger;
+
 void Initialize(v8::Local<v8::Object> exports, v8::Local<v8::Value> unused,
                 v8::Local<v8::Context> context, void* priv) {
   v8::Isolate* isolate = context->GetIsolate();
-  mate::Dictionary dict(isolate, exports);
-  dict.SetMethod("_setWrapDebugger", &atom::api::SetWrapDebugger);
+  mate::Dictionary(isolate, exports)
+      .Set("Debugger", Debugger::GetConstructor(isolate)->GetFunction());
 }
 
 }  // namespace
